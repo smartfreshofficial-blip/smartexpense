@@ -256,6 +256,12 @@
         .bg-green { background: #dcfce7; color: var(--success); }
         .bg-orange { background: #ffedd5; color: var(--warning); }
         .bg-red { background: #fee2e2; color: var(--danger); }
+        .bg-purple { background: #ede9fe; color: #7c3aed; }
+        .bg-teal { background: #ccfbf1; color: #0d9488; }
+
+        /* Sales table badges */
+        .badge.online { background: #dbeafe; color: #1e40af; }
+        .badge.offline { background: #fef3c7; color: #92400e; }
         
         .stat-value { font-size: 24px; font-weight: 700; color: var(--text-main); margin: 5px 0; }
         .stat-label { font-size: 13px; color: var(--text-muted); }
@@ -337,6 +343,9 @@
                 </div>
                 <div class="nav-item" onclick="router.navigate('purchases')">
                     <i class="ph ph-shopping-cart"></i> Purchases
+                </div>
+                <div class="nav-item" onclick="router.navigate('dailyCash')">
+                    <i class="ph ph-cash-register"></i> Daily Cash
                 </div>
                 <div class="nav-item" onclick="router.navigate('payments')">
                     <i class="ph ph-bank"></i> Payments
@@ -493,6 +502,27 @@
                     console.error("DB Delete Error:", error);
                     utils.showToast("Error deleting data.", "danger");
                 }
+            },
+            // ---- Settings helpers (used for shop opening cash etc.) ----
+            getSetting: async (key, defaultValue = null) => {
+                try {
+                    const doc = await db.collection('settings').doc(key).get();
+                    if (doc.exists) return doc.data().value;
+                    return defaultValue;
+                } catch (error) {
+                    console.error("DB getSetting Error:", error);
+                    return defaultValue;
+                }
+            },
+            setSetting: async (key, value) => {
+                try {
+                    await db.collection('settings').doc(key).set({ value, updatedAt: new Date() });
+                    return true;
+                } catch (error) {
+                    console.error("DB setSetting Error:", error);
+                    utils.showToast("Error saving setting.", "danger");
+                    return false;
+                }
             }
         };
 
@@ -547,14 +577,31 @@
 
         const views = {
             dashboard: async () => {
-                const purchases = await DB.get('purchases');
-                const expenses = await DB.get('expenses');
-                
+                const purchases  = await DB.get('purchases');
+                const expenses   = await DB.get('expenses');
+                const dailyCash  = await DB.get('dailyCash');
+
                 const totalPurchases = purchases.reduce((acc, curr) => acc + Number(curr.amount), 0);
-                const totalExpenses = expenses.reduce((acc, curr) => acc + Number(curr.amount), 0);
-                const totalDues = purchases.reduce((acc, curr) => acc + (Number(curr.amount) - Number(curr.paid)), 0);
-                
-                const netCashFlow = totalPurchases - totalExpenses;
+                const totalExpenses  = expenses.reduce((acc, curr) => acc + Number(curr.amount), 0);
+                const totalDues      = purchases.reduce((acc, curr) => acc + (Number(curr.amount) - Number(curr.paid)), 0);
+
+                // Daily cash aggregates
+                const today = new Date().toISOString().split('T')[0];
+                const todaysEntry = dailyCash.find(d => d.date === today);
+                const todayOpening = todaysEntry ? Number(todaysEntry.openingCash) : 0;
+                const todayCash    = todaysEntry ? Number(todaysEntry.cashReceived) : 0;
+                const todayOnline  = todaysEntry ? Number(todaysEntry.onlineReceived) : 0;
+                const todayClosing = todayOpening + todayCash + todayOnline;
+
+                // Latest closing = current cash position
+                const sorted = dailyCash.slice().sort((a,b) => (b.date||'').localeCompare(a.date||''));
+                const latestClosing = sorted.length ? (Number(sorted[0].openingCash) + Number(sorted[0].cashReceived) + Number(sorted[0].onlineReceived)) : 0;
+
+                // Lifetime totals
+                const totalCashReceived   = dailyCash.reduce((a, c) => a + Number(c.cashReceived || 0), 0);
+                const totalOnlineReceived = dailyCash.reduce((a, c) => a + Number(c.onlineReceived || 0), 0);
+
+                const netCashFlow = (totalCashReceived + totalOnlineReceived) - totalExpenses;
 
                 return `
                     <div class="mb-4">
@@ -562,7 +609,7 @@
                         <p class="text-muted">Overview of your business performance</p>
                     </div>
                     
-                    <!-- Stats Grid -->
+                    <!-- Stats Grid (Row 1) -->
                     <div class="grid grid-cols-4 gap-4 mb-4">
                         <div class="card stat-card">
                             <div>
@@ -590,11 +637,47 @@
                         </div>
                         <div class="card stat-card">
                             <div>
-                                <div class="stat-label">Net Balance</div>
-                                <div class="stat-value text-success">${utils.formatCurrency(netCashFlow)}</div>
-                                <div class="text-xs text-muted">Purchases - Expenses</div>
+                                <div class="stat-label">Net Profit (Receipts - Expenses)</div>
+                                <div class="stat-value ${netCashFlow >= 0 ? 'text-success' : 'text-danger'}">${utils.formatCurrency(netCashFlow)}</div>
+                                <div class="text-xs text-muted">Cash + Online - Expenses</div>
                             </div>
-                            <div class="stat-icon bg-green"><i class="ph ph-chart-line-up"></i></div>
+                            <div class="stat-icon ${netCashFlow >= 0 ? 'bg-green' : 'bg-red'}"><i class="ph ph-coins"></i></div>
+                        </div>
+                    </div>
+
+                    <!-- Stats Grid (Row 2 - Today's Cash Position) -->
+                    <div class="grid grid-cols-4 gap-4 mb-4">
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Opening Cash</div>
+                                <div class="stat-value text-primary">${utils.formatCurrency(todayOpening)}</div>
+                                <div class="text-xs text-muted pointer" onclick="router.navigate('dailyCash')">Manage in Daily Cash</div>
+                            </div>
+                            <div class="stat-icon bg-blue"><i class="ph ph-cash-register"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Cash Received</div>
+                                <div class="stat-value text-warning">${utils.formatCurrency(todayCash)}</div>
+                                <div class="text-xs text-muted">In-store / offline</div>
+                            </div>
+                            <div class="stat-icon bg-orange"><i class="ph ph-hand-coins"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Online Received</div>
+                                <div class="stat-value" style="color:#1e40af;">${utils.formatCurrency(todayOnline)}</div>
+                                <div class="text-xs text-muted">UPI / online transfers</div>
+                            </div>
+                            <div class="stat-icon bg-blue" style="background:#dbeafe;color:#1e40af;"><i class="ph ph-globe"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Closing Total</div>
+                                <div class="stat-value text-success">${utils.formatCurrency(todayClosing)}</div>
+                                <div class="text-xs text-muted">Opening + Cash + Online</div>
+                            </div>
+                            <div class="stat-icon bg-green"><i class="ph ph-wallet"></i></div>
                         </div>
                     </div>
 
@@ -683,7 +766,10 @@
                                             <td>${s.contact}</td>
                                             <td>${s.phone}</td>
                                             <td>
-                                                <button class="btn btn-danger btn-sm" onclick="deleteItem('suppliers', '${s.id}')"><i class="ph ph-trash"></i></button>
+                                                <div class="flex gap-2">
+                                                    <button class="btn btn-outline btn-sm" onclick="openEditSupplierModal('${s.id}')" title="Edit"><i class="ph ph-pencil-simple"></i></button>
+                                                    <button class="btn btn-danger btn-sm" onclick="deleteItem('suppliers', '${s.id}')" title="Delete"><i class="ph ph-trash"></i></button>
+                                                </div>
                                             </td>
                                         </tr>
                                     `).join('') : '<tr><td colspan="4" class="empty-state">No suppliers added yet.</td></tr>'}
@@ -732,10 +818,144 @@
                                             <td class="font-bold text-danger">${utils.formatCurrency(due)}</td>
                                             <td><span class="badge ${p.status.toLowerCase()}">${p.status}</span></td>
                                             <td>
-                                                <button class="btn btn-outline btn-sm" onclick="openPaymentModal('${p.id}', ${due})">Pay</button>
+                                                <div class="flex gap-2">
+                                                    <button class="btn btn-outline btn-sm" onclick="openEditPurchaseModal('${p.id}')" title="Edit"><i class="ph ph-pencil-simple"></i></button>
+                                                    <button class="btn btn-outline btn-sm" onclick="openPaymentModal('${p.id}', ${due})" title="Pay">Pay</button>
+                                                    <button class="btn btn-danger btn-sm" onclick="deleteItem('purchases', '${p.id}')" title="Delete"><i class="ph ph-trash"></i></button>
+                                                </div>
                                             </td>
                                         </tr>
                                     `}).join('') : '<tr><td colspan="7" class="empty-state">No purchases recorded.</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            },
+
+            dailyCash: async () => {
+                const entries = await DB.get('dailyCash');
+
+                const today = new Date().toISOString().split('T')[0];
+                const todaysEntry = entries.find(e => e.date === today);
+                const todayOpening = todaysEntry ? Number(todaysEntry.openingCash)   : 0;
+                const todayCash    = todaysEntry ? Number(todaysEntry.cashReceived) : 0;
+                const todayOnline  = todaysEntry ? Number(todaysEntry.onlineReceived) : 0;
+                const todayClosing = todayOpening + todayCash + todayOnline;
+
+                // Lifetime totals
+                const totalCash   = entries.reduce((a, c) => a + Number(c.cashReceived   || 0), 0);
+                const totalOnline = entries.reduce((a, c) => a + Number(c.onlineReceived || 0), 0);
+
+                // Latest closing = current cash position
+                const sorted = entries.slice().sort((a,b) => (b.date||'').localeCompare(a.date||''));
+                const latestClosing = sorted.length
+                    ? (Number(sorted[0].openingCash) + Number(sorted[0].cashReceived) + Number(sorted[0].onlineReceived))
+                    : 0;
+
+                // Default opening for new entry = latest closing (carry forward)
+                const suggestedOpening = latestClosing;
+
+                return `
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <h2 class="font-bold" style="font-size: 24px;">Daily Cash Register</h2>
+                            <p class="text-muted">Track daily opening cash, cash &amp; online receipts, and closing total</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="openDailyCashModal(${suggestedOpening})"><i class="ph ph-plus"></i> Add Daily Entry</button>
+                    </div>
+
+                    <!-- Stats Grid -->
+                    <div class="grid grid-cols-4 gap-4 mb-4">
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Opening Cash</div>
+                                <div class="stat-value text-primary">${utils.formatCurrency(todayOpening)}</div>
+                                <div class="text-xs text-muted">${utils.formatDate(today)}</div>
+                            </div>
+                            <div class="stat-icon bg-blue"><i class="ph ph-cash-register"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Cash Received</div>
+                                <div class="stat-value text-warning">${utils.formatCurrency(todayCash)}</div>
+                                <div class="text-xs text-muted">In-store / offline</div>
+                            </div>
+                            <div class="stat-icon bg-orange"><i class="ph ph-hand-coins"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Online Received</div>
+                                <div class="stat-value" style="color:#1e40af;">${utils.formatCurrency(todayOnline)}</div>
+                                <div class="text-xs text-muted">UPI / bank transfers</div>
+                            </div>
+                            <div class="stat-icon bg-blue" style="background:#dbeafe;color:#1e40af;"><i class="ph ph-globe"></i></div>
+                        </div>
+                        <div class="card stat-card">
+                            <div>
+                                <div class="stat-label">Today's Closing Total</div>
+                                <div class="stat-value text-success">${utils.formatCurrency(todayClosing)}</div>
+                                <div class="text-xs text-muted">Opening + Cash + Online</div>
+                            </div>
+                            <div class="stat-icon bg-green"><i class="ph ph-wallet"></i></div>
+                        </div>
+                    </div>
+
+                    <!-- Lifetime summary strip -->
+                    <div class="card p-4 mb-4 flex justify-between items-center text-sm">
+                        <div>
+                            <span class="text-muted">Lifetime Cash Received:</span>
+                            <span class="font-bold text-warning ml-2">${utils.formatCurrency(totalCash)}</span>
+                        </div>
+                        <div>
+                            <span class="text-muted">Lifetime Online Received:</span>
+                            <span class="font-bold ml-2" style="color:#1e40af;">${utils.formatCurrency(totalOnline)}</span>
+                        </div>
+                        <div>
+                            <span class="text-muted">Current Cash Position (latest closing):</span>
+                            <span class="font-bold text-success ml-2">${utils.formatCurrency(latestClosing)}</span>
+                        </div>
+                    </div>
+
+                    <!-- Daily Cash Table -->
+                    <div class="card">
+                        <div class="flex justify-between items-center p-4" style="border-bottom:1px solid var(--border);">
+                            <h3 class="font-bold">All Daily Entries</h3>
+                            <div class="text-xs text-muted">${entries.length} day(s) tracked</div>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Opening Cash</th>
+                                        <th>Cash Received</th>
+                                        <th>Online Received</th>
+                                        <th>Closing Total</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${entries.length ? entries.slice().sort((a,b)=> (b.date||'').localeCompare(a.date||'')).map(e => {
+                                        const opening = Number(e.openingCash || 0);
+                                        const cash    = Number(e.cashReceived || 0);
+                                        const online  = Number(e.onlineReceived || 0);
+                                        const closing = opening + cash + online;
+                                        return `
+                                        <tr>
+                                            <td class="font-bold">${utils.formatDate(e.date)}</td>
+                                            <td>${utils.formatCurrency(opening)}</td>
+                                            <td class="text-warning font-bold">${utils.formatCurrency(cash)}</td>
+                                            <td class="font-bold" style="color:#1e40af;">${utils.formatCurrency(online)}</td>
+                                            <td class="text-success font-bold">${utils.formatCurrency(closing)}</td>
+                                            <td>
+                                                <div class="flex gap-2">
+                                                    <button class="btn btn-outline btn-sm" onclick="openEditDailyCashModal('${e.id}')" title="Edit"><i class="ph ph-pencil-simple"></i></button>
+                                                    <button class="btn btn-danger btn-sm" onclick="deleteItem('dailyCash', '${e.id}')" title="Delete"><i class="ph ph-trash"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    `}).join('') : '<tr><td colspan="6" class="empty-state">No daily entries yet. Click "Add Daily Entry" to begin.</td></tr>'}
                                 </tbody>
                             </table>
                         </div>
@@ -1025,6 +1245,48 @@
             utils.showToast('Supplier added', 'success');
         };
 
+        // ---------- EDIT SUPPLIER MODAL ----------
+        window.openEditSupplierModal = async (supplierId) => {
+            const suppliers = await DB.get('suppliers');
+            const supplier = suppliers.find(s => s.id === supplierId);
+            if (!supplier) {
+                utils.showToast('Supplier not found', 'danger');
+                return;
+            }
+            document.getElementById('modal-title').innerText = "Edit Supplier";
+            document.getElementById('modal-content').innerHTML = `
+                <form onsubmit="handleEditSupplierSubmit(event, '${supplierId}')" class="flex flex-col gap-4">
+                    <div>
+                        <label class="text-xs text-muted">Supplier Name</label>
+                        <input type="text" name="name" required value="${supplier.name || ''}">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">Contact Person</label>
+                        <input type="text" name="contact" required value="${supplier.contact || ''}">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">Mobile Number</label>
+                        <input type="text" name="phone" required value="${supplier.phone || ''}">
+                    </div>
+                    <button type="submit" class="btn btn-primary justify-center">Update Supplier</button>
+                </form>
+            `;
+            document.getElementById('generic-modal').classList.add('open');
+
+            window.handleEditSupplierSubmit = async (e, id) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                await DB.update('suppliers', id, {
+                    name:    formData.get('name'),
+                    contact: formData.get('contact'),
+                    phone:   formData.get('phone')
+                });
+                closeModal();
+                router.navigate('suppliers');
+                utils.showToast('Supplier updated', 'success');
+            };
+        };
+
         window.openPurchaseModal = async () => {
             const suppliers = await DB.get('suppliers');
             const options = suppliers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
@@ -1063,6 +1325,80 @@
             };
         };
 
+        // ---------- EDIT PURCHASE MODAL ----------
+        window.openEditPurchaseModal = async (purchaseId) => {
+            const purchases = await DB.get('purchases');
+            const purchase = purchases.find(p => p.id === purchaseId);
+            if (!purchase) {
+                utils.showToast('Purchase not found', 'danger');
+                return;
+            }
+            const suppliers = await DB.get('suppliers');
+            const options = suppliers.map(s =>
+                `<option value="${s.id}" ${s.id === purchase.supplierId ? 'selected' : ''}>${s.name}</option>`
+            ).join('');
+
+            document.getElementById('modal-title').innerText = "Edit Purchase";
+            document.getElementById('modal-content').innerHTML = `
+                <form onsubmit="handleEditPurchaseSubmit(event, '${purchaseId}')" class="flex flex-col gap-4">
+                    ${options ? `<select name="supplierId" required>${options}</select>`
+                              : '<p class="text-danger text-sm">No suppliers available.</p>'}
+                    <div class="grid grid-cols-2 gap-2">
+                        <div><label class="text-xs text-muted">Date</label><input type="date" name="date" required value="${purchase.date || ''}"></div>
+                        <div><label class="text-xs text-muted">Due Date</label><input type="date" name="dueDate" required value="${purchase.dueDate || ''}"></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-xs text-muted">Total Amount (₹)</label>
+                            <input type="number" name="amount" required min="0" step="0.01" value="${Number(purchase.amount) || 0}">
+                        </div>
+                        <div>
+                            <label class="text-xs text-muted">Already Paid (₹)</label>
+                            <input type="number" name="paid" required min="0" step="0.01" value="${Number(purchase.paid) || 0}">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">Status</label>
+                        <select name="status" required>
+                            <option value="Unpaid"  ${purchase.status==='Unpaid' ?'selected':''}>Unpaid</option>
+                            <option value="Partial" ${purchase.status==='Partial'?'selected':''}>Partial</option>
+                            <option value="Paid"    ${purchase.status==='Paid'   ?'selected':''}>Paid</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary justify-center" ${!options ? 'disabled' : ''}>Update Purchase</button>
+                </form>
+            `;
+            document.getElementById('generic-modal').classList.add('open');
+
+            window.handleEditPurchaseSubmit = async (e, id) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const amount = parseFloat(formData.get('amount'));
+                const paid   = parseFloat(formData.get('paid'));
+                if (isNaN(amount) || isNaN(paid)) {
+                    utils.showToast('Please enter valid amounts', 'danger');
+                    return;
+                }
+                let status = formData.get('status');
+                // Auto-fix status based on paid vs amount
+                if (paid <= 0)            status = 'Unpaid';
+                else if (paid >= amount)  status = 'Paid';
+                else                       status = 'Partial';
+
+                await DB.update('purchases', id, {
+                    supplierId: formData.get('supplierId'),
+                    date: formData.get('date'),
+                    dueDate: formData.get('dueDate'),
+                    amount: amount,
+                    paid: paid,
+                    status: status
+                });
+                closeModal();
+                router.navigate('purchases');
+                utils.showToast('Purchase updated', 'success');
+            };
+        };
+
         window.openExpenseModal = () => {
              document.getElementById('modal-title').innerText = "Add Expense";
              document.getElementById('modal-content').innerHTML = `
@@ -1096,6 +1432,147 @@
                 closeModal();
                 router.navigate('expenses');
                 utils.showToast('Expense added', 'success');
+            };
+        };
+
+        // ---------- ADD DAILY CASH MODAL ----------
+        // suggestedOpening = previous day's closing (carry-forward)
+        window.openDailyCashModal = (suggestedOpening = 0) => {
+            document.getElementById('modal-title').innerText = "Add Daily Cash Entry";
+            document.getElementById('modal-content').innerHTML = `
+                <form onsubmit="handleDailyCashSubmit(event)" class="flex flex-col gap-4">
+                    <div>
+                        <label class="text-xs text-muted">Date</label>
+                        <input type="date" name="date" required value="${new Date().toISOString().split('T')[0]}">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">Opening Cash (₹) — cash in register at shop open</label>
+                        <input type="number" name="openingCash" placeholder="e.g. 5000" required min="0" step="0.01" value="${Number(suggestedOpening) || 0}">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-xs text-muted">Cash Received (₹)</label>
+                            <input type="number" name="cashReceived" placeholder="0" required min="0" step="0.01" value="0">
+                        </div>
+                        <div>
+                            <label class="text-xs text-muted">Online Received (₹)</label>
+                            <input type="number" name="onlineReceived" placeholder="0" required min="0" step="0.01" value="0">
+                        </div>
+                    </div>
+                    <div class="card p-4 text-sm" style="background:rgba(79,70,229,0.05); border:1px dashed var(--primary);">
+                        <div class="flex justify-between mb-2"><span class="text-muted">Closing Total:</span><span class="font-bold text-success" id="dcPreview">—</span></div>
+                        <div class="text-xs text-muted">Closing = Opening + Cash + Online (auto-calculated on save)</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary justify-center">Save Daily Entry</button>
+                </form>
+            `;
+            document.getElementById('generic-modal').classList.add('open');
+
+            // Live preview of closing total
+            const form = document.querySelector('#generic-modal form');
+            const updatePreview = () => {
+                const o = parseFloat(form.openingCash.value)    || 0;
+                const c = parseFloat(form.cashReceived.value)   || 0;
+                const n = parseFloat(form.onlineReceived.value) || 0;
+                document.getElementById('dcPreview').innerText = utils.formatCurrency(o + c + n);
+            };
+            ['openingCash','cashReceived','onlineReceived'].forEach(name => {
+                form[name].addEventListener('input', updatePreview);
+            });
+            updatePreview();
+
+            window.handleDailyCashSubmit = async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const openingCash   = parseFloat(formData.get('openingCash'));
+                const cashReceived  = parseFloat(formData.get('cashReceived'));
+                const onlineReceived = parseFloat(formData.get('onlineReceived'));
+                if ([openingCash, cashReceived, onlineReceived].some(v => isNaN(v) || v < 0)) {
+                    utils.showToast('Please enter valid amounts', 'danger');
+                    return;
+                }
+                await DB.add('dailyCash', {
+                    date: formData.get('date'),
+                    openingCash,
+                    cashReceived,
+                    onlineReceived
+                });
+                closeModal();
+                router.navigate('dailyCash');
+                utils.showToast('Daily entry added', 'success');
+            };
+        };
+
+        // ---------- EDIT DAILY CASH MODAL ----------
+        window.openEditDailyCashModal = async (entryId) => {
+            const entries = await DB.get('dailyCash');
+            const entry = entries.find(e => e.id === entryId);
+            if (!entry) {
+                utils.showToast('Entry not found', 'danger');
+                return;
+            }
+            document.getElementById('modal-title').innerText = "Edit Daily Cash Entry";
+            document.getElementById('modal-content').innerHTML = `
+                <form onsubmit="handleEditDailyCashSubmit(event, '${entryId}')" class="flex flex-col gap-4">
+                    <div>
+                        <label class="text-xs text-muted">Date</label>
+                        <input type="date" name="date" required value="${entry.date || ''}">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">Opening Cash (₹)</label>
+                        <input type="number" name="openingCash" required min="0" step="0.01" value="${Number(entry.openingCash) || 0}">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-xs text-muted">Cash Received (₹)</label>
+                            <input type="number" name="cashReceived" required min="0" step="0.01" value="${Number(entry.cashReceived) || 0}">
+                        </div>
+                        <div>
+                            <label class="text-xs text-muted">Online Received (₹)</label>
+                            <input type="number" name="onlineReceived" required min="0" step="0.01" value="${Number(entry.onlineReceived) || 0}">
+                        </div>
+                    </div>
+                    <div class="card p-4 text-sm" style="background:rgba(79,70,229,0.05); border:1px dashed var(--primary);">
+                        <div class="flex justify-between mb-2"><span class="text-muted">Closing Total:</span><span class="font-bold text-success" id="dcEditPreview">—</span></div>
+                        <div class="text-xs text-muted">Closing = Opening + Cash + Online (auto-calculated on save)</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary justify-center">Update Daily Entry</button>
+                </form>
+            `;
+            document.getElementById('generic-modal').classList.add('open');
+
+            // Live preview
+            const form = document.querySelector('#generic-modal form');
+            const updatePreview = () => {
+                const o = parseFloat(form.openingCash.value)    || 0;
+                const c = parseFloat(form.cashReceived.value)   || 0;
+                const n = parseFloat(form.onlineReceived.value) || 0;
+                document.getElementById('dcEditPreview').innerText = utils.formatCurrency(o + c + n);
+            };
+            ['openingCash','cashReceived','onlineReceived'].forEach(name => {
+                form[name].addEventListener('input', updatePreview);
+            });
+            updatePreview();
+
+            window.handleEditDailyCashSubmit = async (e, id) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const openingCash    = parseFloat(formData.get('openingCash'));
+                const cashReceived   = parseFloat(formData.get('cashReceived'));
+                const onlineReceived = parseFloat(formData.get('onlineReceived'));
+                if ([openingCash, cashReceived, onlineReceived].some(v => isNaN(v) || v < 0)) {
+                    utils.showToast('Please enter valid amounts', 'danger');
+                    return;
+                }
+                await DB.update('dailyCash', id, {
+                    date: formData.get('date'),
+                    openingCash,
+                    cashReceived,
+                    onlineReceived
+                });
+                closeModal();
+                router.navigate('dailyCash');
+                utils.showToast('Daily entry updated', 'success');
             };
         };
 
