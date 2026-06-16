@@ -11,10 +11,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
 
-    <!-- Firebase SDKs -->
+    <!-- Firebase SDKs (Only App and Firestore) -->
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-    <!-- Auth SDK Re-added to recover your User ID -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
 
     <style>
@@ -354,10 +352,10 @@
                 </div>
             </nav>
             <div class="user-profile">
-                <div class="avatar" id="user-avatar">U</div>
+                <div class="avatar">A</div>
                 <div style="flex: 1;">
-                    <div class="text-sm font-bold" id="user-name">User</div>
-                    <div class="text-xs text-muted">Manager</div>
+                    <div class="text-sm font-bold">Admin</div>
+                    <div class="text-xs text-muted">Owner</div>
                 </div>
                 <i class="ph ph-sign-out pointer" style="color: var(--danger);" onclick="handleLogout()"></i>
             </div>
@@ -415,98 +413,65 @@
             measurementId: "G-HWCJ9319T7"
         };
 
-        // Initialize Firebase
+        // Initialize Firebase (App + Firestore Only - No Auth)
         firebase.initializeApp(firebaseConfig);
-        const firebaseAuth = firebase.auth(); // Initialized to get UID
         const db = firebase.firestore();
 
         // Hardcoded Credentials
         const ALLOWED_EMAIL = "smartexpense@gmail.com";
         const ALLOWED_PASS = "Smart@123";
-        
-        // This variable will hold the REAL ID to recover data
-        let globalUserId = null;
 
         /**
          * --------------------------------------------------------------------------
-         * HYBRID AUTHENTICATION (Simple UI + Real Connection)
+         * SIMPLE LOGIN LOGIC (No Firebase Auth)
          * --------------------------------------------------------------------------
          */
 
-        window.handleLogin = async (e) => {
+        window.handleLogin = (e) => {
             e.preventDefault();
             const email = document.getElementById('email').value;
             const password = document.getElementById('password').value;
 
-            // 1. Check hardcoded string
+            // 1. Simple String Check
             if (email === ALLOWED_EMAIL && password === ALLOWED_PASS) {
-                try {
-                    // 2. Perform REAL Firebase login to get the ID
-                    const userCredential = await firebaseAuth.signInWithEmailAndPassword(email, password);
-                    globalUserId = userCredential.user.uid; // Get the Real ID
-                    
-                    // 3. Show App
-                    document.getElementById('auth-screen').style.display = 'none';
-                    document.getElementById('app').style.display = 'flex';
-                    
-                    document.getElementById('user-name').textContent = "Admin";
-                    document.getElementById('user-avatar').textContent = "A";
-                    
-                    router.navigate('dashboard');
-                    utils.showToast('Welcome back! Data recovered.', 'success');
-                } catch (error) {
-                    // Account might not exist if this is a fresh browser or they wiped auth
-                    if(error.code === 'auth/user-not-found') {
-                        utils.showToast('User not found in Firebase. Creating new account...', 'warning');
-                        try {
-                            const createCred = await firebaseAuth.createUserWithEmailAndPassword(email, password);
-                            globalUserId = createCred.user.uid;
-                            document.getElementById('auth-screen').style.display = 'none';
-                            document.getElementById('app').style.display = 'flex';
-                            router.navigate('dashboard');
-                        } catch(createErr) {
-                             utils.showToast('Error creating account: ' + createErr.message, 'danger');
-                        }
-                    } else {
-                        utils.showToast('Login Error: ' + error.message, 'danger');
-                    }
-                }
+                document.getElementById('auth-screen').style.display = 'none';
+                document.getElementById('app').style.display = 'flex';
+                
+                router.navigate('dashboard');
+                utils.showToast('Logged in successfully', 'success');
             } else {
                 utils.showToast('Incorrect ID or Password', 'danger');
             }
         };
 
         window.handleLogout = () => {
-            // Logout and Reload to clear session
-            firebaseAuth.signOut().then(() => {
-                location.reload();
-            });
+            // Just reload to reset
+            location.reload();
         };
 
         /**
          * --------------------------------------------------------------------------
-         * DATABASE SERVICE (FIRESTORE)
+         * DATABASE SERVICE (FIRESTORE - NO USER FILTER)
          * --------------------------------------------------------------------------
          */
         const DB = {
             get: async (collection) => {
                 try {
-                    // Use the globalUserId which is now your Real ID
-                    if (!globalUserId) return []; 
-                    const snap = await db.collection(collection).where("userId", "==", globalUserId).get();
+                    // GET ALL DATA (No userId filter to recover old data)
+                    const snap = await db.collection(collection).get();
                     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 } catch (error) {
                     console.error("DB Get Error:", error);
-                    utils.showToast("Error loading data.", "danger");
+                    utils.showToast("Error loading data. Check console.", "danger");
                     return [];
                 }
             },
             add: async (collection, item) => {
                 try {
-                    if (!globalUserId) return null;
-                    const itemWithUser = { ...item, userId: globalUserId, createdAt: new Date() };
-                    const docRef = await db.collection(collection).add(itemWithUser);
-                    return { id: docRef.id, ...itemWithUser };
+                    // Add data without userId (Simplified)
+                    const itemWithDate = { ...item, createdAt: new Date() };
+                    const docRef = await db.collection(collection).add(itemWithDate);
+                    return { id: docRef.id, ...itemWithDate };
                 } catch (error) {
                     console.error("DB Add Error:", error);
                     utils.showToast("Error saving data.", "danger");
